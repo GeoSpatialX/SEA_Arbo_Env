@@ -16,8 +16,6 @@ sesu_change <- function (gdlist, su,label=su)
   var <- as.character(gdlist[[1]]$Factor.detector$Factor$variable)
   qv <- t(sapply(gdlist, function(x) x$Factor.detector$Factor$qv))
   sig <- t(sapply(gdlist, function(x) x$Factor.detector$Factor$sig))
-  #qv[which(sig >= 0.05)] <- NA
-  
   qv_1 <- data.frame(qv)
   
   label <- label
@@ -46,11 +44,6 @@ sesu_change <- function (gdlist, su,label=su)
   
   final_data <- rbind(qv90_2,qv2)
   
-  # p <- ggplot(final_data,aes(x= unit,label=variable))+geom_line(aes(y=qvalue,color=variable))+
-  #   geom_point(aes(y=qvalue,shape=variable,color=variable))+
-  #   scale_shape_manual(values=seq(0,15))+scale_x_continuous(breaks = c(1,2,3))
-  
-  
   p <- ggplot(subset(final_data, variable != '90% quantile'),aes(x= unit,y=qvalue))+geom_line(aes(color=variable),size=0.8)+
     geom_point(aes(shape=variable,color=variable),size=3)+  
     geom_line(data = subset(final_data, variable == '90% quantile'),size = 1, color = 'black')+
@@ -60,7 +53,6 @@ sesu_change <- function (gdlist, su,label=su)
     ggrepel::geom_label_repel(data = subset(final_data, variable == '90% quantile')[nsu,],
                               aes(x= unit,y=qvalue,label=variable),max.overlaps=Inf,min.segment.length = 0,
                               direction="y", hjust = "left",color = "red",box.padding = 0.3,size = 5)+
-    # xlab("Size of spatial unit")+ylab("Q Value")+
     labs(x="Size of spatial unit",y="Q Value")+
     theme_bw() +
     theme(
@@ -72,8 +64,6 @@ sesu_change <- function (gdlist, su,label=su)
       axis.text.x = element_text(size =20,face = "bold"),
       axis.text.y = element_text(size = 20,face = "bold"),
       legend.key.width = unit(3, "line"),
-      # strip.text.x = element_text(size = 12, face = "bold", color = "black"),
-      # strip.background = element_rect(fill = "white", color = "black", size = 1),
       legend.position = "top",
       legend.background = element_rect(fill = "transparent"),
       
