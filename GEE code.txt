@@ -1,0 +1,152 @@
+///////                          This code is revised from https://smithsonian.github.io/SDMinGEE/
+///////                          Cited: Crego, Ramiro D., Jared A. Stabach, and Grant Connette. "Implementation of species distribution models in Google Earth Engine." Diversity and Distributions 28.5 (2022): 904-916.
+
+var Data = mosquito_trainingdataset
+
+function RemoveDuplicates(data){
+  var randomraster = ee.Image.random().reproject('EPSG:4326', null, GrainSize);
+  var randpointvals = randomraster.sampleRegions({collection:ee.FeatureCollection(data), scale: 500, geometries: true});
+  return randpointvals.distinct('random');
+}
+
+var Data = RemoveDuplicates(Data);
+
+var GrainSize = 500;
+
+var Terrain = ee.Algorithms.Terrain(ee.Image("USGS/SRTMGL1_003"));
+
+var watermask =  Terrain.select('elevation').gt(0);
+
+var AOI = Data.geometry().bounds()
+
+var AOI2 = ee.Geometry.Polygon(
+        [[[125.62069453672166, 21.449322845360044],
+          [110.72323359922167, 14.813479846539536],
+          [108.36480356378823, 17.849076370473956],
+          [108.32117036507157, 21.87236541291246],
+          [97.53963984922167, 28.802646898600557],
+          [94.53370120987053, 26.31134637673443],
+          [91.60702266172167, 22.0208146799527],
+          [92.3766990665507, 5.686401956673516],
+          [98.90194453672166, -9.972814393705507],
+          [141.17733516172166, -10.40533596637124],
+          [141.17733516172166, 16.548103882338964]]])
+          
+var predictors1 = his_ab // define the training dataset that you want to apply in your study area
+
+var fut = ab_fut_1 // define the prediction dataset that you want to apply in your study area
+
+var bands = ['tmmn','tmmx','srad','vs','pr','LC_Type1','population'
+,'LST_Day_1km','LST_Night_1km','slope','elevation','vap']; // specific the variables name
+
+
+var predictors1 = predictors1.select(bands);
+
+var future_clim = future_clim.select(bands)
+
+var mask = Data
+  .reduceToImage({
+    properties: ['random'],
+    reducer: ee.Reducer.first()
+}).reproject('EPSG:4326', null, ee.Number(GrainSize)).mask().neq(1).selfMask();
+
+var PixelVals = predictors1.sampleRegions({collection: Data.randomColumn().sort('random'), properties: [], tileScale: 16, scale: GrainSize});
+
+var clusterer = ee.Clusterer.wekaKMeans({nClusters:2, distanceFunction:"Euclidean"}).train(PixelVals);
+
+var Clresult = predictors1.cluster(clusterer);
+
+var clustID = Clresult.sampleRegions({collection: Data.randomColumn().sort('random'), properties: [], tileScale: 16, scale: GrainSize});
+
+clustID = ee.FeatureCollection(clustID).reduceColumns(ee.Reducer.mode(),['cluster']);
+
+clustID = ee.Number(clustID.get('mode')).subtract(1).abs();
+
+var mask2 = Clresult.select(['cluster']).eq(clustID);
+
+var AreaForPA = mask.updateMask(mask2).clip(AOI);
+
+function makeGrid(geometry, scale) {
+  var lonLat = ee.Image.pixelLonLat();
+  var lonGrid = lonLat
+    .select('longitude')
+    .multiply(100000)
+    .toInt();
+  var latGrid = lonLat
+    .select('latitude')
+    .multiply(100000)
+    .toInt();
+  return lonGrid
+    .multiply(latGrid)
+    .reduceToVectors({
+      geometry: geometry.buffer({distance:20000,maxError:1000}),
+      scale: scale,
+      geometryType: 'polygon',
+    });
+}
+
+var Scale = 200000; 
+var grid = makeGrid(AOI, Scale);
+var Grid = watermask.reduceRegions({collection: grid, reducer: ee.Reducer.mean()}).filter(ee.Filter.neq('mean',null));
+
+function SDM(x) {
+var Seed = ee.Number(x);
+    var GRID = ee.FeatureCollection(Grid).randomColumn({seed:Seed}).sort('random');
+    
+    var TrainingGrid = GRID.filter(ee.Filter.lt('random', 1));
+    
+    var PresencePoints = ee.FeatureCollection(Data);
+    
+    PresencePoints = PresencePoints.map(function(feature){return feature.set('PresAbs', 1)});
+    
+    var TrPresencePoints = PresencePoints.filter(ee.Filter.bounds(TrainingGrid));   
+    
+    var TrPseudoAbsPoints = AreaForPA.sample({region: TrainingGrid, scale: GrainSize, numPixels: TrPresencePoints.size(), seed:Seed, geometries: true});
+    
+    TrPseudoAbsPoints = TrPseudoAbsPoints.randomColumn().sort('random').limit(ee.Number(TrPresencePoints.size()));
+    
+    TrPseudoAbsPoints = TrPseudoAbsPoints.map(function(feature){
+        return feature.set('PresAbs', 0);
+        });
+
+    var trainingPartition = TrPresencePoints.merge(TrPseudoAbsPoints);
+
+    var trainPixelVals = predictors1.sampleRegions({collection: trainingPartition, properties: ['PresAbs'], scale: GrainSize, tileScale: 16, geometries: true});
+
+    var Classifier = ee.Classifier.smileRandomForest({
+      numberOfTrees: 1000, 
+      variablesPerSplit: null, 
+      minLeafPopulation: 10,
+      bagFraction: 0.5,
+      maxNodes: null,
+      seed: Seed
+      });
+    
+    var ClassifierPr = Classifier.setOutputMode('PROBABILITY').train(trainPixelVals, 'PresAbs', bands); 
+    
+    var ClassifiedImgPr = future_clim.select(bands).classify(ClassifierPr);
+   
+    return ee.List([ClassifiedImgPr]);
+}
+
+var numiter = 10;
+
+var results = ee.List([3407,52,41,34,77,233,22,88,24,12]).map(SDM);
+
+var results = results.flatten();
+
+var images = ee.List.sequence(0,ee.Number(numiter).subtract(1),1).map(function(x){
+  return results.get(x)});
+
+var ModelAverage = ee.ImageCollection.fromImages(images).mean().clip(AOI2);
+
+
+Export.image.toDrive({
+image: ModelAverage,
+description: 'Suitability',
+folder: "suitability_folder",
+region: AOI2, 
+scale: GrainSize,
+crs: "EPSG:4326",
+maxPixels: 1e13
+})
